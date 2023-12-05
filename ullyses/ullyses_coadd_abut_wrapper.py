@@ -16,16 +16,42 @@ from ullyses.coadd import COSSegmentList, STISSegmentList, FUSESegmentList, CCDS
 from ullyses.coadd import abut, SegmentList
 import ullyses_utils
 from ullyses_utils.ullyses_config import RENAME, VERSION, CAL_VER
+from hasp.grating_priority import create_level4_products
+from ullyses.combine_header_keys import KeyBlender
 
 RED = "\033[1;31m"
 RESET = "\033[0;0m"
+
+ULLYSES_GRATING_PRIORITIES = {'COS/G130M': {'minwave': 900, 'maxwave': 1470, 'priority': 1},
+                              'FUSE/FUSE': {'minwave': 912, 'maxwave': 1179.9, 'priority': 2},
+                              'STIS/E140M': {'minwave': 1141.6, 'maxwave': 1727.2, 'priority': 3},
+                              'COS/G160M': {'minwave': 1342, 'maxwave': 1800, 'priority': 4},
+                              'STIS/E140H': {'minwave': 1141.1, 'maxwave': 1687.9, 'priority': 5},
+                              'STIS/G140M': {'minwave': 1145.1, 'maxwave': 1741.9, 'priority': 6},
+                              'STIS/E230M': {'minwave': 1606.7, 'maxwave': 3119.2, 'priority': 7},
+                              'STIS/E230H': {'minwave': 1629.0, 'maxwave': 3156.0, 'priority': 8},
+                              'STIS/G230M': {'minwave': 1641.8, 'maxwave': 3098.2, 'priority': 9},
+                              'COS/G140L': {'minwave': 901, 'maxwave': 2150, 'priority': 10},
+                              'STIS/G230MB': {'minwave': 1635.0, 'maxwave': 3184.5, 'priority': 11},
+                              'COS/G185M': {'minwave': 1664, 'maxwave': 2134, 'priority': 12},
+                              'COS/G225M': {'minwave': 2069, 'maxwave': 2526, 'priority': 13},
+                              'COS/G285M': {'minwave': 2474, 'maxwave': 3221, 'priority': 14},
+                              'STIS/G140L': {'minwave': 1138.4, 'maxwave': 1716.4, 'priority': 15},
+                              'STIS/G430M': {'minwave': 3021.9, 'maxwave': 5610.1, 'priority': 16},
+                              'STIS/G230L': {'minwave': 1582.0, 'maxwave': 3158.7, 'priority': 17},
+                              'STIS/G230LB': {'minwave': 1667.1, 'maxwave': 3071.6, 'priority': 18},
+                              'COS/G230L': {'minwave': 1650, 'maxwave': 3200, 'priority': 19},
+                              'STIS/G750M': {'minwave': 5464.6, 'maxwave': 10645.1, 'priority': 20},
+                              'STIS/G430L': {'minwave': 2895.9, 'maxwave': 5704.4, 'priority': 21},
+                              'STIS/G750L': {'minwave': 5261.3, 'maxwave': 10252.3, 'priority': 22},
+                      }
 
 '''
 This wrapper goes through each target folder in the ullyses data directory and find
 the data and which gratings are present. This info is then fed into coadd.py.
 '''
 
-class Ullyses_SegmentList(SegmentList):
+class Ullyses_SegmentList(KeyBlender, SegmentList):
     """This class is a mixin to add the project-specific write function and functions
     to populate the target name and coordinates
 
@@ -65,6 +91,7 @@ class Ullyses_SegmentList(SegmentList):
         hdr1['MJD-BEG'] = (mjd_beg, 'MJD of first exposure start')
         hdr1['MJD-END'] = (mjd_end, 'MJD of last exposure end')
         hdr1['XPOSURE'] = (self.combine_keys("exptime", "sum"), '[s] Sum of exposure durations')
+        hdr1['COMMENT'] = (self.combine_keys("comment", "concat"), "Calibration and/or quality comment")
 
         # set up the table columns
         nelements = len(self.output_wavelength)
@@ -104,7 +131,7 @@ class Ullyses_SegmentList(SegmentList):
         hdr0['APERTURE'] = (self.combine_keys("aperture", "multi"), 'Identifier of entrance aperture')
         hdr0['S_REGION'] = (self.obs_footprint(), 'Region footprint')
         hdr0['OBSMODE'] = (self.combine_keys("obsmode", "multi"), 'Instrument operating mode (ACCUM | TIME-TAG)')
-        hdr0['TARGNAME'] = self.target
+        hdr0['TARGNAME'] = self.get_targname("target_name_ullyses")
         hdr0.add_blank(after='OBSMODE')
         hdr0.add_blank('              / TARGET INFORMATION', before='TARGNAME')
 
@@ -125,7 +152,9 @@ class Ullyses_SegmentList(SegmentList):
         hdr0['LICENURL'] = ('https://creativecommons.org/licenses/by/4.0/', 'Data license URL')
         hdr0['REFERENC'] = ('https://ui.adsabs.harvard.edu/abs/2020RNAAS...4..205R', 'Bibliographic ID of primary paper')
 
-        hdr0['CENTRWV'] = (self.combine_keys("centrwv", "average"), 'Central wavelength of the data')
+        centrwv = (self.output_wavelength[-1] - self.output_wavelength[0])/2. + self.output_wavelength[0] 
+        hdr0['CENTRWV'] = (centrwv, 'Central wavelength of the data')
+
         hdr0.add_blank(after='REFERENC')
         hdr0.add_blank('           / ARCHIVE SEARCH KEYWORDS', before='CENTRWV')
         hdr0['MINWAVE'] = (self.combine_keys("minwave", "min"), 'Minimum wavelength in spectrum')
@@ -210,7 +239,7 @@ class Ullyses_SegmentList(SegmentList):
         s_region = f"CIRCLE {center_ra} {center_dec} {radius}"
         return s_region
 
-    def get_targname(self):
+    def get_targname(self, targcol="target_name_hlsp"):
         aliases_file = ullyses_utils.__path__[0] + '/data/target_metadata/ullyses_aliases.csv'
         aliases = pd.read_csv(aliases_file)
         # These are just preliminary target names, in case we can't find a match
@@ -225,7 +254,7 @@ class Ullyses_SegmentList(SegmentList):
             mask = aliases.apply(lambda row: row.astype(str).str.fullmatch(re.escape(targ_upper)).any(), axis=1)
             if set(mask) != {False}:
                 targ_matched = True
-                ull_targname = aliases[mask]["target_name_hlsp"].values[0]
+                ull_targname = aliases[mask][targcol].values[0]
                 break
         if targ_matched is False:
             print(f"{RED}WARNING: Could not match target name {ull_targname} to ULLYSES alias list{RESET}")
@@ -247,72 +276,15 @@ class Ullyses_SegmentList(SegmentList):
         else:
             return avg_ra, avg_dec
 
-    def combine_keys(self, key, method):
-        keymap= {"HST": {"expstart": ("expstart", 1),
-                         "expend": ("expend", 1),
-                         "exptime": ("exptime", 1),
-                         "telescop": ("telescop", 0),
-                         "instrume": ("instrume", 0),
-                         "detector": ("detector", 0),
-                         "opt_elem": ("opt_elem", 0),
-                         "cenwave": ("cenwave", 0),
-                         "aperture": ("aperture", 0),
-                         "obsmode": ("obsmode", 0),
-                         "proposid": ("proposid", 0),
-                         "centrwv": ("centrwv", 0),
-                         "minwave": ("minwave", 0),
-                         "maxwave": ("maxwave", 0),
-                         "filename": ("filename", 0),
-                         "specres": ("specres", 0),
-                         "cal_ver": ("cal_ver", 0)},
-                "FUSE": {"expstart": ("obsstart", 0),
-                         "expend": ("obsend", 0),
-                         "exptime": ("obstime", 0),
-                         "telescop": ("telescop", 0),
-                         "instrume": ("instrume", 0),
-                         "detector": ("detector", 0),
-                         "opt_elem": ("detector", 0),
-                         "cenwave": ("centrwv", 0),
-                         "aperture": ("aperture", 0),
-                         "obsmode": ("instmode", 0),
-                         "proposid": ("prgrm_id", 0),
-                         "centrwv": ("centrwv", 0),
-                         "minwave": ("wavemin", 0),
-                         "maxwave": ("wavemax", 0),
-                         "filename": ("filename", 0),
-                         "specres": ("spec_rp", 1),
-                         "cal_ver": ("cf_vers", 0)}}
 
-        vals = []
-        for i in range(len(self.primary_headers)):
-            tel = self.primary_headers[i]["telescop"]
-            actual_key = keymap[tel][key][0]
-            hdrno = keymap[tel][key][1]
-            if hdrno == 0:
-                val = self.primary_headers[i][actual_key]
-            else:
-                val = self.first_headers[i][actual_key]
-            if tel == "FUSE" and key == "filename":
-                val = val.replace(".fit", "_vo.fits")
-            vals.append(val)
-
-        # Allowable methods are min, max, average, sum, multi, arr
-        if method == "multi":
-            keys_set = list(set(vals))
-            if len(keys_set) > 1:
-                return "MULTI"
-            else:
-                return keys_set[0]
-        elif method == "min":
-            return min(vals)
-        elif method == "max":
-            return max(vals)
-        elif method == "average":
-            return np.average(vals)
-        elif method == "sum":
-            return np.sum(vals)
-        elif method == "arr":
-            return np.array(vals)
+    def add_hasp_attributes(self):
+        self.disambiguated_grating = self.grating.lower()
+        self.gratinglist = [self.grating]
+        self.aperturelist = []
+        self.instrumentlist = []
+        self.propid = ''
+        self.rootname = ''
+        self.num_exp = 1
 
 class Ullyses_COSSegmentList(COSSegmentList, Ullyses_SegmentList):
     pass
@@ -387,6 +359,7 @@ def coadd_and_abut_files(infiles, outdir, version=VERSION, clobber=False):
 
     # Create dictionary of all products, with each set to None by default
     products = defaultdict(lambda: None)
+    productdict = {}
 
     level = 2
     for obskey in uniqmodes:
@@ -455,7 +428,8 @@ def coadd_and_abut_files(infiles, outdir, version=VERSION, clobber=False):
             print(f"   Wrote {outname}")
             products[f'{instrument}/{grating}'] = prod
         products[f'{instrument}/{grating}'] = prod
-
+        productdict[f'{instrument}/{grating}'] = prod
+        prod.add_hasp_attributes()
 
     # Create level 3 products- abutted spectra for gratings of the same
     # resolution for each instrument.
@@ -485,132 +459,19 @@ def coadd_and_abut_files(infiles, outdir, version=VERSION, clobber=False):
         filename = os.path.join(outdir, filename)
         products['FUSE/FUSE'].write(filename, clobber, level=level, version=version)
 
-
     # Determine which gratings should contribute to the final level 4 SED HLSP.
     # Starting with the bluest product and working redward, find which products,
     # if any, overlap with the bluer product. If more than one overlaps, use
     # the one that extends further. If none overlap, still abut them- there
     # will just be a region of flux=0 in between.
     level = 4
-    gratings = []
-    minwls = []
-    maxwls = []
-    ins = []
-    for instrument, grating, detector in uniqmodes:
-        ins.append(instrument)
-        gratings.append(grating)
-        minwls.append(products[instrument+"/"+grating].first_good_wavelength)
-        maxwls.append(products[instrument+"/"+grating].last_good_wavelength)
-    # Only go through this exercise if there is data for more than one instrument
-    if len(set(ins)) != 1:
-        df = pd.DataFrame({"gratings": gratings, "ins": ins, "minwls": minwls, "maxwls": maxwls})
-        used = pd.DataFrame()
-        # Start with the bluest product, and remove rows from the dataframe
-        # until no rows remain. The only exception is if the bluest product is
-        # STIS/echelle *and* G130M+G160M combo exists. Then use G130M+G160M as bluest
-        # and ignore STIS/echelle
-        lowind = df["minwls"].idxmin()
-        if df.loc[lowind, "gratings"] in ["E140M", "E140H"]:
-            if "G130M" in gratings and "G160M" in gratings:
-                g130mind = df.loc[df["gratings"] == "G130M"].index.values
-                if isinstance(g130mind, int):
-                    locind = [g130mind]
-                else:
-                    locind = g130mind
-                used = pd.concat([used, df.loc[locind]])
-                shortestwl = df.loc[g130mind[0], "minwls"]
-                df = df.drop(index=g130mind)
-                g160mind = df.loc[df["gratings"] == "G160M"].index.values
-                if isinstance(g160mind, int):
-                    locind = [g160mind]
-                else:
-                    locind = g160mind
-                used = pd.concat([used, df.loc[locind]])
-                maxwl = df.loc[g160mind[0], "maxwls"]
-                df = df.drop(index=g160mind)
-                df = df.drop(index=lowind)
-            else:
-                shortestwl = df.loc[lowind, "minwls"]
-                if isinstance(lowind, int):
-                    locind = [lowind]
-                else:
-                    locind = lowind
-                used = pd.concat([used, df.loc[locind]])
-                maxwl = df.loc[lowind, "maxwls"]
-                df = df.drop(lowind)
-        else:
-            shortestwl = df.loc[lowind, "minwls"]
-            if isinstance(lowind, int):
-                locind = [lowind]
-            else:
-                locind = lowind
-            used = pd.concat([used, df.loc[locind]])
-            maxwl = df.loc[lowind, "maxwls"]
-            df = df.drop(lowind)
-        while len(df) > 0:
-            lowind = df.loc[(df["minwls"] < maxwl) & (df["maxwls"] > maxwl)].index.values
-            # If G130M and G160M both exist for a given target, *always*
-            # abut them together regardless of other available gratings.
-            # This captures the case where there is FUSE bluer than COS/FUV.
-            if "G130M" in used.gratings.values and "G160M" in gratings and "G160M" not in used.gratings.values:
-                lowind = df.loc[df["gratings"] == "G160M"].index.values
-                maxwl = df.loc[lowind[0], "maxwls"]
-                if isinstance(lowind, int):
-                    locind = [lowind]
-                else:
-                    locind = lowind
-                used = pd.concat([used, df.loc[locind]])
-                df = df.drop(index=lowind)
-            # Handle case where more than one grating overlaps with bluer data.
-            elif len(lowind) > 1:
-                df2 = df.loc[lowind]
-                ranges = df2.maxwls - df2.minwls
-                biggest = ranges.idxmax()
-                match_grating = df2.loc[biggest, "gratings"]
-                match_ind = df.loc[df["gratings"] == match_grating].index.values
-                if isinstance(match_ind, int):
-                    locind = [match_ind]
-                else:
-                    locind = match_ind
-                used = pd.concat([used, df.loc[locind]])
-                maxwl = df.loc[match_ind, "maxwls"].values[0]
-                df = df.drop(index=lowind)
-            # If none overlap, abut with the next closest product.
-            elif len(lowind) == 0:
-                lowind = df["minwls"].idxmin()
-                if isinstance(lowind, int):
-                    locind = [lowind]
-                else:
-                    locind = lowind
-                used = pd.concat([used, df.loc[locind]])
-                maxwl = df.loc[lowind, "maxwls"]
-                df = df.drop(lowind)
-            # This is the easy case- only one mode overlaps with the bluer data.
-            else:
-                maxwl = df.loc[lowind[0], "maxwls"]
-                if isinstance(lowind, int):
-                    locind = [lowind]
-                else:
-                    locind = lowind
-                used = pd.concat([used, df.loc[locind]])
-                df = df.drop(index=lowind)
-            # Check every time if there are any modes that overlap completely
-            # with what has been abutted so far.
-            badinds = df.loc[(df["minwls"] > shortestwl) & (df["maxwls"] < maxwl)].index.values
-            if len(badinds) > 0:
-                df = df.drop(index=badinds)
-        # If more than one instrument was selected for abutting,
-        # create level 4 product.
-        if len(set(used["ins"].values)) > 1:
-            abut_gr = used.iloc[0]["ins"] + "/" + used.iloc[0]["gratings"]
-            abutted = products[abut_gr]
-            for i in range(1, len(used)):
-                abut_gr = used.iloc[i]["ins"] + "/" + used.iloc[i]["gratings"]
-                abutted = abut(abutted, products[abut_gr])
-            filename = create_output_file_name(abutted, version, level=level)
-            filename = os.path.join(outdir, filename)
-            abutted.write(filename, clobber, level=level, version=version)
-            print(f"   Wrote {filename}")
+    productlist = [productdict[key] for key in productdict]
+    abutted_product = create_level4_products(productlist, productdict,
+                                             grating_table=ULLYSES_GRATING_PRIORITIES)
+    filename = create_output_file_name(abutted_product, version, level=level)
+    filename = os.path.join(outdir, filename)
+    abutted_product.write(filename, clobber, level=level, version=version)
+    print(f"   Wrote {filename}")
 
 
 def create_output_file_name(prod, version=VERSION, level=3):
@@ -643,12 +504,17 @@ def create_output_file_name(prod, version=VERSION, level=3):
         suffix = 'aspec'
     elif level == 4:
         suffix = "preview-spec"
-        if "G430L" in prod.grating or "G750L" in prod.grating:
+        if "g430" in prod.grating or "g750" in prod.grating:
             grating = "uv-opt"
         else:
             grating = "uv"
         if 'fuse' in instrument:
             tel = 'hst-fuse'
+            # Move fuse to the front of the instrument list
+            instrument_list = instrument.split('-')
+            instrument_list.remove('fuse')
+            instrument_list.insert(0, 'fuse')
+            instrument = '-'.join(instrument_list)
         else:
             tel = 'hst'
 
@@ -658,7 +524,6 @@ def create_output_file_name(prod, version=VERSION, level=3):
 
 
 def main(indir, outdir, version=VERSION, clobber=False):
-    print("dev version!!!")
     allfiles = find_files(indir)
     coadd_and_abut_files(allfiles, outdir, version, clobber)
 
